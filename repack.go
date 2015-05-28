@@ -1,344 +1,135 @@
 package main
 
-import "fmt"
-
 // A repacker repacks trucks.
 type repacker struct {
 	pallets [][]pallet
+	boxes   [][]box
 }
 
-// There are 10 possible sizes of boxes
-const (
-	Dim1x1 = iota
-	Dim2x1
-	Dim2x2
-	Dim3x1
-	Dim3x2
-	Dim3x3
-	Dim4x1
-	Dim4x2
-	Dim4x3
-	Dim4x4
-)
-
-// Translate a width and length onto a box size index.
-func dimIndex(w, l uint8) uint8 {
-	switch {
-	case w == 1 && l == 1:
-		return Dim1x1
-	case w == 2 && l == 1:
-		return Dim2x1
-	case w == 2 && l == 2:
-		return Dim2x2
-	case w == 3 && l == 1:
-		return Dim3x1
-	case w == 3 && l == 2:
-		return Dim3x2
-	case w == 3 && l == 3:
-		return Dim3x3
-	case w == 4 && l == 1:
-		return Dim4x1
-	case w == 4 && l == 2:
-		return Dim4x2
-	case w == 4 && l == 3:
-		return Dim4x3
-	case w == 4 && l == 4:
-		return Dim4x4
-	default:
-		panic(fmt.Sprintf("Invalid box size: w=%v l=%v", w, l))
+func MakeRepacker() *repacker {
+	// Initialize box storage with slots for each unique box shape
+	numBoxShapes := (boxesIndex(palletWidth, palletLength) + 1)
+	return &repacker{
+		pallets: make([][]pallet, 0),
+		boxes:   make([][]box, numBoxShapes),
 	}
 }
 
-func (r *repacker) unload(t *truck) {
+// To get the index of a box, calculate sum(0..w-1) + l-1
+// There will be boxesIndex(palletWidth, palletLength) + 1 unique box shapes,
+// once boxes are rotated such that the longest side is the width.
+func boxesIndex(w, l uint8) uint8 {
+	return ((w - 1) * ((w - 1) + 1) / 2) + (l - 1)
+}
+
+func (r *repacker) unloadTruck(t *truck) {
 	r.pallets = append(r.pallets, t.pallets)
 }
 
-func (r *repacker) sortPallets() (boxes [10][]box) {
+func (r *repacker) unloadPallets() {
 	for _, pallets := range r.pallets {
 		for _, p := range pallets {
 			for _, b := range p.boxes {
 				if b.w < b.l {
 					b.l, b.w = b.w, b.l
 				}
-				i := dimIndex(b.w, b.l)
-				boxes[i] = append(boxes[i], b)
+				i := boxesIndex(b.w, b.l)
+				r.boxes[i] = append(r.boxes[i], b)
 			}
 		}
 	}
-	return
+}
+
+func (r *repacker) haveBoxes() bool {
+	for _, boxes := range r.boxes {
+		if len(boxes) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *repacker) takeLargestAvailableBox(maxW, maxL uint8) *box {
+	for w := maxW; w > 0; w-- {
+		for l := maxL; l > 0; l-- {
+			if b := r.takeNextBox(w, l); b != nil {
+				return b
+			}
+		}
+	}
+	return nil
+}
+
+func (r *repacker) takeNextBox(w, l uint8) *box {
+	// boxes are stored horizontally. if a vertical box is requested, flip
+	// the dimensions, and then rotate the box before returning
+	flip := w < l
+	if flip {
+		w, l = l, w
+	}
+
+	i := boxesIndex(w, l)
+	if len(r.boxes[i]) > 0 {
+		// remove the first box from the boxes of that size
+		b := r.boxes[i][0]
+		r.boxes[i] = r.boxes[i][1:]
+		if flip {
+			b.w, b.l = b.l, b.w
+		}
+		return &b
+	}
+	return nil
+}
+
+func (r *repacker) fillSpace(p *pallet, w, l, y, x uint8) {
+	// grab the largest available box
+	b := r.takeLargestAvailableBox(w, l)
+
+	// if no box was found, there either aren't any pallets left, or this
+	// space isn't fillable with what pallets are available
+	if b == nil {
+		return
+	}
+
+	// add box to pallet
+	b.y, b.x = y, x
+	p.boxes = append(p.boxes, *b)
+
+	if b.w < w {
+		// fill space to the right of the placed box (up to the length
+		// of the placed box)
+		r.fillSpace(p, w-b.w, b.l, y+b.w, x)
+	}
+
+	if b.l < l {
+		// fill space below the placed box (including the space
+		// below-right, beyond the length of the placed box)
+		r.fillSpace(p, w, l-b.l, y, x+b.l)
+	}
 }
 
 func (r *repacker) packEverything(id int) *truck {
-	out := &truck{id: id}
-	boxesByDim := r.sortPallets()
+	r.unloadPallets()
 
-	// Pack 4x4s, one per pallet
-	for _, b := range boxesByDim[Dim4x4] {
-		b.x, b.y = 0, 0
-		out.pallets = append(out.pallets, pallet{boxes: []box{b}})
+	var pallets []pallet
+
+	for r.haveBoxes() {
+		p := &pallet{}
+		r.fillSpace(p, palletWidth, palletLength, 0, 0)
+		pallets = append(pallets, *p)
 	}
-	boxesByDim[Dim4x4] = []box{}
 
-	// Pack 4x2s, two at a time
-	boxes := []box{}
-	for i, b := range boxesByDim[Dim4x2] {
-		switch i % 2 {
-		case 0:
-			b.x, b.y = 0, 0
-			boxes = append(boxes, b)
-		case 1:
-			b.x, b.y = 2, 0
-			boxes = append(boxes, b)
-			out.pallets = append(out.pallets, pallet{boxes: boxes})
-			boxes = []box{}
-		}
-	}
-	if len(boxes) > 0 {
-		out.pallets = append(out.pallets, pallet{boxes: boxes})
-	}
-	boxesByDim[Dim4x2] = []box{}
-
-	// Pack 2x2s, four at a time
-	boxes = []box{}
-	for i, b := range boxesByDim[Dim2x2] {
-		switch i % 4 {
-		case 0:
-			b.x, b.y = 0, 0
-			boxes = append(boxes, b)
-		case 1:
-			b.x, b.y = 0, 2
-			boxes = append(boxes, b)
-		case 2:
-			b.x, b.y = 2, 0
-			boxes = append(boxes, b)
-		case 3:
-			b.x, b.y = 2, 2
-			boxes = append(boxes, b)
-			out.pallets = append(out.pallets, pallet{boxes: boxes})
-			boxes = []box{}
-		}
-	}
-	if len(boxes) > 0 {
-		out.pallets = append(out.pallets, pallet{boxes: boxes})
-	}
-	boxesByDim[Dim2x2] = []box{}
-
-	// Pack 4x3s, one per pallet, filling the left-over row
-	for _, b := range boxesByDim[Dim4x3] {
-		b.x, b.y = 0, 0
-		boxes = []box{b}
-
-		// fill the last row
-		if len(boxesByDim[Dim4x1]) > 0 {
-			b = boxesByDim[Dim4x1][0]
-			b.x, b.y = 3, 0
-			boxes = append(boxes, b)
-			boxesByDim[Dim4x1] = boxesByDim[Dim4x1][1:]
-		}
-
-		out.pallets = append(out.pallets, pallet{boxes: boxes})
-	}
-	boxesByDim[Dim4x3] = []box{}
-
-	// Pack 3x3s, one per pallet, filling the left-over row and column
-	for _, b := range boxesByDim[Dim3x3] {
-		b.x, b.y = 0, 0
-		boxes = []box{b}
-
-		// fill the last row
-		if len(boxesByDim[Dim4x1]) > 0 {
-			b = boxesByDim[Dim4x1][0]
-			b.x, b.y = 3, 0
-			boxes = append(boxes, b)
-			boxesByDim[Dim4x1] = boxesByDim[Dim4x1][1:]
-		}
-
-		// fill the last column
-		if len(boxesByDim[Dim3x1]) > 0 {
-			b = boxesByDim[Dim3x1][0]
-			b.l, b.w = b.w, b.l // flip vertical
-			b.x, b.y = 0, 3
-			boxes = append(boxes, b)
-			boxesByDim[Dim3x1] = boxesByDim[Dim3x1][1:]
-		}
-
-		out.pallets = append(out.pallets, pallet{boxes: boxes})
-	}
-	boxesByDim[Dim3x3] = []box{}
-
-	// Pack 3x2s, two per pallet, filling the left-over column
-	boxes = []box{}
-	for i, b := range boxesByDim[Dim3x2] {
-		switch i % 2 {
-		case 0:
-			b.x, b.y = 0, 0
-			boxes = append(boxes, b)
-		case 1:
-			b.x, b.y = 2, 0
-			boxes = append(boxes, b)
-
-			// fill the last column
-			if len(boxesByDim[Dim4x1]) > 0 {
-				b = boxesByDim[Dim4x1][0]
-				b.l, b.w = b.w, b.l // flip vertical
-				b.x, b.y = 0, 3
-				boxes = append(boxes, b)
-				boxesByDim[Dim4x1] = boxesByDim[Dim4x1][1:]
-			}
-
-			out.pallets = append(out.pallets, pallet{boxes: boxes})
-			boxes = []box{}
-		}
-	}
-	if len(boxes) > 0 {
-		out.pallets = append(out.pallets, pallet{boxes: boxes})
-	}
-	boxesByDim[Dim3x2] = []box{}
-
-	// Pack 3x1s, four per pallet, filling the left-over column
-	boxes = []box{}
-	for i, b := range boxesByDim[Dim3x1] {
-		switch i % 4 {
-		case 0:
-			b.x, b.y = 0, 0
-			boxes = append(boxes, b)
-		case 1:
-			b.x, b.y = 1, 0
-			boxes = append(boxes, b)
-		case 2:
-			b.x, b.y = 2, 0
-			boxes = append(boxes, b)
-		case 3:
-			b.x, b.y = 3, 0
-			boxes = append(boxes, b)
-
-			// fill the last column
-			if len(boxesByDim[Dim4x1]) > 0 {
-				b = boxesByDim[Dim4x1][0]
-				b.l, b.w = b.w, b.l // flip vertical
-				b.x, b.y = 0, 3
-				boxes = append(boxes, b)
-				boxesByDim[Dim4x1] = boxesByDim[Dim4x1][1:]
-			}
-
-			out.pallets = append(out.pallets, pallet{boxes: boxes})
-			boxes = []box{}
-		}
-	}
-	if len(boxes) > 0 {
-		out.pallets = append(out.pallets, pallet{boxes: boxes})
-	}
-	boxesByDim[Dim3x1] = []box{}
-
-	// Pack 2x1s, eight per pallet
-	boxes = []box{}
-	for i, b := range boxesByDim[Dim2x1] {
-		switch i % 8 {
-		case 0:
-			b.x, b.y = 0, 0
-			boxes = append(boxes, b)
-		case 1:
-			b.x, b.y = 0, 2
-			boxes = append(boxes, b)
-		case 2:
-			b.x, b.y = 1, 0
-			boxes = append(boxes, b)
-		case 3:
-			b.x, b.y = 1, 2
-			boxes = append(boxes, b)
-		case 4:
-			b.x, b.y = 2, 0
-			boxes = append(boxes, b)
-		case 5:
-			b.x, b.y = 2, 2
-			boxes = append(boxes, b)
-		case 6:
-			b.x, b.y = 3, 0
-			boxes = append(boxes, b)
-		case 7:
-			b.x, b.y = 3, 2
-			boxes = append(boxes, b)
-			out.pallets = append(out.pallets, pallet{boxes: boxes})
-			boxes = []box{}
-		}
-	}
-	if len(boxes) > 0 {
-		out.pallets = append(out.pallets, pallet{boxes: boxes})
-	}
-	boxesByDim[Dim2x1] = []box{}
-
-	// Pack 1x1s, sixteen per pallet
-	boxes = []box{}
-	for i, b := range boxesByDim[Dim1x1] {
-		switch i % 16 {
-		case 0:
-			b.x, b.y = 0, 0
-			boxes = append(boxes, b)
-		case 1:
-			b.x, b.y = 0, 1
-			boxes = append(boxes, b)
-		case 2:
-			b.x, b.y = 0, 2
-			boxes = append(boxes, b)
-		case 3:
-			b.x, b.y = 0, 3
-			boxes = append(boxes, b)
-		case 4:
-			b.x, b.y = 1, 0
-			boxes = append(boxes, b)
-		case 5:
-			b.x, b.y = 1, 1
-			boxes = append(boxes, b)
-		case 6:
-			b.x, b.y = 1, 2
-			boxes = append(boxes, b)
-		case 7:
-			b.x, b.y = 1, 3
-			boxes = append(boxes, b)
-		case 8:
-			b.x, b.y = 2, 0
-			boxes = append(boxes, b)
-		case 9:
-			b.x, b.y = 2, 1
-			boxes = append(boxes, b)
-		case 10:
-			b.x, b.y = 2, 2
-			boxes = append(boxes, b)
-		case 11:
-			b.x, b.y = 2, 3
-			boxes = append(boxes, b)
-		case 12:
-			b.x, b.y = 3, 0
-			boxes = append(boxes, b)
-		case 13:
-			b.x, b.y = 3, 1
-			boxes = append(boxes, b)
-		case 14:
-			b.x, b.y = 3, 2
-			boxes = append(boxes, b)
-		case 15:
-			b.x, b.y = 3, 3
-			boxes = append(boxes, b)
-			out.pallets = append(out.pallets, pallet{boxes: boxes})
-			boxes = []box{}
-		}
-	}
-	if len(boxes) > 0 {
-		out.pallets = append(out.pallets, pallet{boxes: boxes})
-	}
-	boxesByDim[Dim1x1] = []box{}
-
-	return out
+	return &truck{id: id, pallets: pallets}
 }
 
 func newRepacker(in <-chan *truck, out chan<- *truck) *repacker {
-	r := &repacker{}
+	r := MakeRepacker()
 	go func() {
 		for t := range in {
 			// The last truck is indicated by its id. You might
 			// need to do something special here to make sure you
 			// send all the boxes.
-			r.unload(t)
+			r.unloadTruck(t)
 			if t.id == idLastTruck {
 				out <- r.packEverything(t.id)
 			} else {
