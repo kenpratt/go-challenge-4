@@ -2,14 +2,16 @@ package main
 
 // A repacker repacks trucks.
 type repacker struct {
-	boxes [][]box
+	boxes    [][]box
+	numBoxes uint64
 }
 
 func MakeRepacker() *repacker {
 	// Initialize box storage with slots for each unique box shape
 	numBoxShapes := (boxesIndex(palletWidth, palletLength) + 1)
 	return &repacker{
-		boxes: make([][]box, numBoxShapes),
+		boxes:    make([][]box, numBoxShapes),
+		numBoxes: 0,
 	}
 }
 
@@ -21,24 +23,16 @@ func boxesIndex(w, l uint8) uint8 {
 }
 
 func (r *repacker) unloadTruck(t *truck) {
-	for _, p := range tpallets {
+	for _, p := range t.pallets {
 		for _, b := range p.boxes {
 			if b.w < b.l {
 				b.l, b.w = b.w, b.l
 			}
 			i := boxesIndex(b.w, b.l)
 			r.boxes[i] = append(r.boxes[i], b)
+			r.numBoxes += 1
 		}
 	}
-}
-
-func (r *repacker) haveBoxes() bool {
-	for _, boxes := range r.boxes {
-		if len(boxes) > 0 {
-			return true
-		}
-	}
-	return false
 }
 
 func (r *repacker) takeLargestAvailableBox(maxW, maxL uint8) *box {
@@ -65,6 +59,7 @@ func (r *repacker) takeNextBox(w, l uint8) *box {
 		// remove the first box from the boxes of that size
 		b := r.boxes[i][0]
 		r.boxes[i] = r.boxes[i][1:]
+		r.numBoxes -= 1
 		if flip {
 			b.w, b.l = b.l, b.w
 		}
@@ -103,7 +98,7 @@ func (r *repacker) fillSpace(p *pallet, w, l, y, x uint8) {
 func (r *repacker) packEverything(id int) *truck {
 	var pallets []pallet
 
-	for r.haveBoxes() {
+	for r.numBoxes > 0 {
 		p := &pallet{}
 		r.fillSpace(p, palletWidth, palletLength, 0, 0)
 		pallets = append(pallets, *p)
