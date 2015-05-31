@@ -2,16 +2,14 @@ package main
 
 // A repacker repacks trucks.
 type repacker struct {
-	pallets [][]pallet
-	boxes   [][]box
+	boxes [][]box
 }
 
 func MakeRepacker() *repacker {
 	// Initialize box storage with slots for each unique box shape
 	numBoxShapes := (boxesIndex(palletWidth, palletLength) + 1)
 	return &repacker{
-		pallets: make([][]pallet, 0),
-		boxes:   make([][]box, numBoxShapes),
+		boxes: make([][]box, numBoxShapes),
 	}
 }
 
@@ -23,19 +21,13 @@ func boxesIndex(w, l uint8) uint8 {
 }
 
 func (r *repacker) unloadTruck(t *truck) {
-	r.pallets = append(r.pallets, t.pallets)
-}
-
-func (r *repacker) unloadPallets() {
-	for _, pallets := range r.pallets {
-		for _, p := range pallets {
-			for _, b := range p.boxes {
-				if b.w < b.l {
-					b.l, b.w = b.w, b.l
-				}
-				i := boxesIndex(b.w, b.l)
-				r.boxes[i] = append(r.boxes[i], b)
+	for _, p := range tpallets {
+		for _, b := range p.boxes {
+			if b.w < b.l {
+				b.l, b.w = b.w, b.l
 			}
+			i := boxesIndex(b.w, b.l)
+			r.boxes[i] = append(r.boxes[i], b)
 		}
 	}
 }
@@ -109,8 +101,6 @@ func (r *repacker) fillSpace(p *pallet, w, l, y, x uint8) {
 }
 
 func (r *repacker) packEverything(id int) *truck {
-	r.unloadPallets()
-
 	var pallets []pallet
 
 	for r.haveBoxes() {
